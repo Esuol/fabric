@@ -1,14 +1,10 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+use log::warn;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use std::{
+    ffi::{c_void, CStr},
+    os::raw::{c_char, c_int},
+    ptr::null_mut,
+};
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+mod addon;
+

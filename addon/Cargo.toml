@@ -1,8 +1,22 @@
 [package]
-name = "addon"
+name = "fabric-addon"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "fabric"
+crate-type = ["cdylib"]
+
 [dependencies]
+ctor = "0.2.7"
+log = "0.4.21"
+
+[dependencies.fabric-codegen]
+version = "*"
+path = "../codegen"
+
+[dependencies.fabric-runtime]
+version = "*"
+path = "../runtime"
