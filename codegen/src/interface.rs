@@ -26,3 +26,25 @@ where
 {
   Punctuated::from_iter(iter)
 }
+
+fn generics_argument(
+  args: impl IntoIterator<Item = GenericArgument>,
+) -> AngleBracketedGenericArguments {
+  AngleBracketedGenericArguments {
+      lt_token: Token![<](Span::call_site()),
+      args: punctuated(args),
+      colon2_token: None,
+      gt_token: Token![>](Span::call_site()),
+  }
+}
+
+fn segment(ident: Ident, arguments: Option<AngleBracketedGenericArguments>) -> PathSegment {
+  PathSegment {
+      ident,
+      arguments: if let Some(arguments) = arguments {
+          PathArguments::AngleBracketed(arguments)
+      } else {
+          PathArguments::None
+      },
+  }
+}
