@@ -48,3 +48,10 @@ fn segment(ident: Ident, arguments: Option<AngleBracketedGenericArguments>) -> P
       },
   }
 }
+
+fn path(segments: impl IntoIterator<Item = PathSegment>) -> Path {
+  Path {
+      leading_colon: None,
+      segments: punctuated(segments),
+  }
+}
