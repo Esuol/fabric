@@ -451,3 +451,383 @@ fn is_mutable(method: &TraitItemMethod) -> bool {
         }
     })
 }
+
+fn vtable_shim(method: &TraitItemMethod, trait_name: &Ident, class_name: &Ident) -> ItemFn {
+    let mut container_bounds = vec![TypeParamBound::Trait(TraitBound {
+        paren_token: None,
+        modifier: TraitBoundModifier::None,
+        lifetimes: None,
+        path: path(vec![
+            segment(ident("std"), None),
+            segment(ident("ops"), None),
+            segment(
+                ident("Deref"),
+                Some(generics_argument(vec![GenericArgument::Binding(Binding {
+                    ident: ident("Target"),
+                    eq_token: Token![=](Span::call_site()),
+                    ty: Type::Path(TypePath {
+                        qself: None,
+                        path: path(vec![segment(ident("T"), None)]),
+                    }),
+                })])),
+            ),
+        ]),
+    })];
+
+    if is_mutable(method) {
+        container_bounds.push(TypeParamBound::Trait(TraitBound {
+            paren_token: None,
+            modifier: TraitBoundModifier::None,
+            lifetimes: None,
+            path: path(vec![
+                segment(ident("std"), None),
+                segment(ident("ops"), None),
+                segment(ident("DerefMut"), None),
+            ]),
+        }));
+    }
+
+    let mut content_bounds = vec![TypeParamBound::Trait(TraitBound {
+        paren_token: None,
+        modifier: TraitBoundModifier::None,
+        lifetimes: None,
+        path: path(vec![segment(trait_name.clone(), None)]),
+    })];
+
+    if !is_owned(method) {
+        content_bounds.push(TypeParamBound::Trait(TraitBound {
+            paren_token: None,
+            modifier: TraitBoundModifier::Maybe(Token![?](Span::call_site())),
+            lifetimes: None,
+            path: path(vec![segment(ident("Sized"), None)]),
+        }));
+    }
+
+    ItemFn {
+        attrs: Vec::new(),
+        vis: Visibility::Inherited,
+        sig: Signature {
+            constness: method.sig.constness.clone(),
+            asyncness: method.sig.asyncness.clone(),
+            unsafety: method.sig.unsafety.clone(),
+            abi: Some(Abi {
+                extern_token: Token![extern](Span::call_site()),
+                name: Some(LitStr::new("thiscall", Span::call_site())),
+            }),
+            fn_token: method.sig.fn_token.clone(),
+            ident: method.sig.ident.clone(),
+            generics: Generics {
+                lt_token: Some(Token![<](Span::call_site())),
+                params: punctuated(vec![
+                    GenericParam::Type(TypeParam {
+                        attrs: Vec::new(),
+                        ident: ident("P"),
+                        colon_token: Some(Token![:](Span::call_site())),
+                        bounds: punctuated(container_bounds),
+                        eq_token: None,
+                        default: None,
+                    }),
+                    GenericParam::Type(TypeParam {
+                        attrs: Vec::new(),
+                        ident: ident("T"),
+                        colon_token: Some(Token![:](Span::call_site())),
+                        bounds: punctuated(content_bounds),
+                        eq_token: None,
+                        default: None,
+                    }),
+                ]),
+                where_clause: None,
+                gt_token: Some(Token![>](Span::call_site())),
+            },
+            paren_token: method.sig.paren_token.clone(),
+            inputs: method
+                .sig
+                .inputs
+                .iter()
+                .map(|input| match input {
+                    FnArg::Receiver(receiver) => FnArg::Typed(PatType {
+                        attrs: Vec::new(),
+                        pat: Box::new(Pat::Path(PatPath {
+                            attrs: Vec::new(),
+                            qself: None,
+                            path: path(vec![segment(ident("this"), None)]),
+                        })),
+                        colon_token: Token![:](Span::call_site()),
+                        ty: Box::new(Type::Ptr(pointer_type(
+                            receiver.mutability.clone(),
+                            Type::Path(path_type(vec![
+                                segment(ident("std"), None),
+                                segment(ident("ffi"), None),
+                                segment(ident("c_void"), None),
+                            ])),
+                        ))),
+                    }),
+                    FnArg::Typed(input) => FnArg::Typed(PatType {
+                        attrs: Vec::new(),
+                        pat: input.pat.clone(),
+                        colon_token: Token![:](Span::call_site()),
+                        ty: Box::new(map_type(&*input.ty)),
+                    }),
+                })
+                .collect(),
+            variadic: method.sig.variadic.clone(),
+            output: match &method.sig.output {
+                ReturnType::Default => ReturnType::Default,
+                ReturnType::Type(token, ty) => {
+                    ReturnType::Type(token.clone(), Box::new(map_type(ty)))
+                }
+            },
+        },
+        block: Box::new(Block {
+            brace_token: Brace(Span::call_site()),
+            stmts: vec![Stmt::Expr(Expr::Unsafe(ExprUnsafe {
+                attrs: Vec::new(),
+                unsafe_token: Token![unsafe](Span::call_site()),
+                block: Block {
+                    brace_token: Brace(Span::call_site()),
+                    stmts: vec![
+                        Stmt::Expr(Expr::Verbatim({
+                            let name = method.sig.ident.clone();
+                            quote! {
+                                log::trace!(concat!(stringify!(#trait_name), "::", stringify!(#name)));
+                            }
+                        })),
+                        Stmt::Expr({
+                            let expr = Expr::Call(ExprCall {
+                                attrs: Vec::new(),
+                                func: Box::new(Expr::Path(ExprPath {
+                                    attrs: Vec::new(),
+                                    qself: None,
+                                    path: path(vec![
+                                        segment(ident("T"), None),
+                                        segment(method.sig.ident.clone(), None),
+                                    ]),
+                                })),
+                                paren_token: Paren(method.sig.ident.span()),
+                                args: method
+                                    .sig
+                                    .inputs
+                                    .iter()
+                                    .map(|input| match input {
+                                        FnArg::Receiver(input) => {
+                                            map_self_output(input, &class_name)
+                                        }
+                                        FnArg::Typed(input) => match &*input.pat {
+                                            Pat::Ident(id) => map_output(
+                                                Expr::Path(ExprPath {
+                                                    attrs: Vec::new(),
+                                                    qself: None,
+                                                    path: path(vec![segment(
+                                                        id.ident.clone(),
+                                                        None,
+                                                    )]),
+                                                }),
+                                                &input.ty,
+                                            ),
+                                            pat => panic!("{:?}", pat),
+                                        },
+                                    })
+                                    .collect(),
+                            });
+
+                            match &method.sig.output {
+                                ReturnType::Default => expr,
+                                ReturnType::Type(_, ty) => map_input(expr, ty),
+                            }
+                        }),
+                    ],
+                },
+            }))],
+        }),
+    }
+}
+
+fn vtable_impl(input: &ItemTrait) -> ItemImpl {
+    let name = input.ident.clone();
+    let vtable_name = Ident::new(&format!("I{}", name), Span::call_site());
+    let class_name = Ident::new(&format!("C{}", name), Span::call_site());
+
+    let vtable_shims: Vec<_> = input
+        .items
+        .iter()
+        .map(|item| match item {
+            TraitItem::Method(method) => vtable_shim(method, &name, &class_name),
+            item => panic!("{:?}", item),
+        })
+        .collect();
+
+    let vtable_entries: Punctuated<_, Token![,]> = input
+        .items
+        .iter()
+        .map(|item| match item {
+            TraitItem::Method(method) => {
+                let ident = method.sig.ident.clone();
+                FieldValue {
+                    attrs: Vec::new(),
+                    member: Member::Named(method.sig.ident.clone()),
+                    colon_token: Some(Token![:](Span::call_site())),
+                    expr: Expr::Verbatim(quote! {
+                        #ident::<P, T>
+                    }),
+                }
+            }
+            other => panic!("{:?}", other),
+        })
+        .collect();
+
+    let mut container_bounds = vec![TypeParamBound::Trait(TraitBound {
+        paren_token: None,
+        modifier: TraitBoundModifier::None,
+        lifetimes: None,
+        path: path(vec![
+            segment(ident("std"), None),
+            segment(ident("ops"), None),
+            segment(
+                ident("Deref"),
+                Some(generics_argument(vec![GenericArgument::Binding(Binding {
+                    ident: ident("Target"),
+                    eq_token: Token![=](Span::call_site()),
+                    ty: Type::Path(TypePath {
+                        qself: None,
+                        path: path(vec![segment(ident("T"), None)]),
+                    }),
+                })])),
+            ),
+        ]),
+    })];
+
+    let has_mutable = input.items.iter().any(|item| {
+        if let TraitItem::Method(method) = item {
+            is_mutable(method)
+        } else {
+            false
+        }
+    });
+
+    if has_mutable {
+        container_bounds.push(TypeParamBound::Trait(TraitBound {
+            paren_token: None,
+            modifier: TraitBoundModifier::None,
+            lifetimes: None,
+            path: path(vec![
+                segment(ident("std"), None),
+                segment(ident("ops"), None),
+                segment(ident("DerefMut"), None),
+            ]),
+        }));
+    }
+
+    let mut content_bounds = vec![TypeParamBound::Trait(TraitBound {
+        paren_token: None,
+        modifier: TraitBoundModifier::None,
+        lifetimes: None,
+        path: path(vec![segment(name.clone(), None)]),
+    })];
+
+    let has_owned = input.items.iter().any(|item| {
+        if let TraitItem::Method(method) = item {
+            is_owned(method)
+        } else {
+            false
+        }
+    });
+
+    if !has_owned {
+        content_bounds.push(TypeParamBound::Trait(TraitBound {
+            paren_token: None,
+            modifier: TraitBoundModifier::Maybe(Token![?](Span::call_site())),
+            lifetimes: None,
+            path: path(vec![segment(ident("Sized"), None)]),
+        }));
+    }
+
+    ItemImpl {
+        attrs: Vec::new(),
+        defaultness: None,
+        unsafety: None,
+        impl_token: Token![impl](Span::call_site()),
+        generics: Generics {
+            lt_token: None,
+            params: Punctuated::new(),
+            gt_token: None,
+            where_clause: None,
+        },
+        trait_: None,
+        self_ty: Box::new(Type::TraitObject(TypeTraitObject {
+            dyn_token: Some(Token![dyn](Span::call_site())),
+            bounds: punctuated(vec![TypeParamBound::Trait(TraitBound {
+                paren_token: None,
+                modifier: TraitBoundModifier::None,
+                lifetimes: None,
+                path: path(vec![segment(name.clone(), None)]),
+            })]),
+        })),
+        brace_token: Brace(Span::call_site()),
+        items: vec![ImplItem::Method(ImplItemMethod {
+            attrs: Vec::new(),
+            vis: Visibility::Restricted(VisRestricted {
+                pub_token: Token![pub](Span::call_site()),
+                paren_token: Paren(Span::call_site()),
+                in_token: None,
+                path: Box::new(path(vec![segment(ident("crate"), None)])),
+            }),
+            defaultness: None,
+            sig: Signature {
+                constness: Some(Token![const](Span::call_site())),
+                asyncness: None,
+                unsafety: None,
+                abi: None,
+                fn_token: Token![fn](Span::call_site()),
+                ident: ident("vtable"),
+                generics: Generics {
+                    lt_token: Some(Token![<](Span::call_site())),
+                    params: punctuated(vec![
+                        GenericParam::Type(TypeParam {
+                            attrs: Vec::new(),
+                            ident: ident("P"),
+                            colon_token: Some(Token![:](Span::call_site())),
+                            bounds: punctuated(container_bounds),
+                            eq_token: None,
+                            default: None,
+                        }),
+                        GenericParam::Type(TypeParam {
+                            attrs: Vec::new(),
+                            ident: ident("T"),
+                            colon_token: Some(Token![:](Span::call_site())),
+                            bounds: punctuated(content_bounds),
+                            eq_token: None,
+                            default: None,
+                        }),
+                    ]),
+                    gt_token: Some(Token![>](Span::call_site())),
+                    where_clause: None,
+                },
+                paren_token: Paren(Span::call_site()),
+                inputs: punctuated(None),
+                variadic: None,
+                output: ReturnType::Type(
+                    Token![->](Span::call_site()),
+                    Box::new(Type::Path(path_type(vec![segment(
+                        vtable_name.clone(),
+                        None,
+                    )]))),
+                ),
+            },
+            block: Block {
+                brace_token: Brace(Span::call_site()),
+                stmts: vtable_shims
+                    .into_iter()
+                    .map(|item| Stmt::Item(Item::Fn(item)))
+                    .chain(Some(Stmt::Expr(Expr::Struct(ExprStruct {
+                        attrs: Vec::new(),
+                        path: path(vec![segment(vtable_name.clone(), None)]),
+                        brace_token: Brace(Span::call_site()),
+                        fields: vtable_entries,
+                        dot2_token: None,
+                        rest: None,
+                    }))))
+                    .collect(),
+            },
+        })],
+    }
+}
