@@ -382,3 +382,52 @@ fn map_self_output(input: &Receiver, class_name: &Ident) -> Expr {
         })
     }
 }
+
+fn impl_trait(
+    trait_name: Ident,
+    self_path: TypePath,
+    generics: &[Ident],
+    items: Vec<ImplItem>,
+) -> ItemImpl {
+    ItemImpl {
+        attrs: Vec::new(),
+        defaultness: None,
+        unsafety: None,
+        impl_token: Token![impl](Span::call_site()),
+        generics: if generics.is_empty() {
+            Generics {
+                lt_token: None,
+                params: Punctuated::new(),
+                gt_token: None,
+                where_clause: None,
+            }
+        } else {
+            Generics {
+                lt_token: Some(Token![<](Span::call_site())),
+                params: generics
+                    .iter()
+                    .map(|ident| {
+                        GenericParam::Type(TypeParam {
+                            attrs: Vec::new(),
+                            ident: ident.clone(),
+                            colon_token: None,
+                            bounds: Punctuated::new(),
+                            eq_token: None,
+                            default: None,
+                        })
+                    })
+                    .collect(),
+                gt_token: Some(Token![>](Span::call_site())),
+                where_clause: None,
+            }
+        },
+        trait_: Some((
+            None,
+            path(vec![segment(trait_name, None)]),
+            Token![for](Span::call_site()),
+        )),
+        self_ty: Box::new(Type::Path(self_path)),
+        brace_token: Brace(Span::call_site()),
+        items,
+    }
+}
