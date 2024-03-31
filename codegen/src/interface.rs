@@ -325,3 +325,60 @@ fn map_output(input: Expr, ty: &Type) -> Expr {
 
     input
 }
+
+fn map_self_output(input: &Receiver, class_name: &Ident) -> Expr {
+    if input.reference.is_some() {
+        Expr::Reference(ExprReference {
+            attrs: Vec::new(),
+            and_token: Token![&](Span::call_site()),
+            raw: Default::default(),
+            mutability: if input.mutability.is_some() {
+                Some(Token![mut](Span::call_site()))
+            } else {
+                None
+            },
+            expr: Box::new(Expr::Field(ExprField {
+                attrs: Vec::new(),
+                base: Box::new(Expr::Paren(ExprParen {
+                    attrs: Vec::new(),
+                    paren_token: Paren(Span::call_site()),
+                    expr: Box::new(Expr::Unary(ExprUnary {
+                        attrs: Vec::new(),
+                        op: UnOp::Deref(Token![*](Span::call_site())),
+                        expr: Box::new(Expr::Paren(ExprParen {
+                            attrs: Vec::new(),
+                            paren_token: Paren(Span::call_site()),
+                            expr: Box::new(Expr::Cast(ExprCast {
+                                attrs: Vec::new(),
+                                expr: Box::new(Expr::Path(ExprPath {
+                                    attrs: Vec::new(),
+                                    qself: None,
+                                    path: path(vec![segment(ident("this"), None)]),
+                                })),
+                                as_token: Token![as](Span::call_site()),
+                                ty: Box::new(Type::Ptr(pointer_type(
+                                    input.mutability.clone(),
+                                    Type::Path(path_type(vec![segment(
+                                        class_name.clone(),
+                                        Some(generics_argument(vec![GenericArgument::Type(
+                                            Type::Path(TypePath {
+                                                qself: None,
+                                                path: path(vec![segment(ident("P"), None)]),
+                                            }),
+                                        )])),
+                                    )])),
+                                ))),
+                            })),
+                        })),
+                    })),
+                })),
+                dot_token: Token![.](Span::call_site()),
+                member: Member::Named(ident("instance")),
+            })),
+        })
+    } else {
+        Expr::Verbatim(quote! {
+            *Box::from_raw(this as *mut #class_name<P>).instance
+        })
+    }
+}
