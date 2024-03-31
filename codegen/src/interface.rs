@@ -431,3 +431,23 @@ fn impl_trait(
         items,
     }
 }
+
+fn is_owned(method: &TraitItemMethod) -> bool {
+    method.sig.inputs.iter().any(|arg| {
+        if let FnArg::Receiver(recv) = arg {
+            recv.reference.is_none()
+        } else {
+            false
+        }
+    })
+}
+
+fn is_mutable(method: &TraitItemMethod) -> bool {
+    method.sig.inputs.iter().any(|arg| {
+        if let FnArg::Receiver(recv) = arg {
+            recv.mutability.is_some()
+        } else {
+            false
+        }
+    })
+}
