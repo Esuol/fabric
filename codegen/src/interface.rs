@@ -150,3 +150,106 @@ fn map_type(input: &Type) -> Type {
 
     input.clone()
 }
+
+fn map_input(input: Expr, ty: &Type) -> Expr {
+    match ty {
+        Type::Reference(reference) => match &*reference.elem {
+            Type::Path(pat) => {
+                if let Some(seg) = pat.path.segments.last() {
+                    if seg.ident.to_string() == "CStr" {
+                        return Expr::Call(ExprCall {
+                            attrs: Vec::new(),
+                            func: Box::new(Expr::Field(ExprField {
+                                attrs: Vec::new(),
+                                base: Box::new(input),
+                                dot_token: Token![.](Span::call_site()),
+                                member: Member::Named(ident("as_ptr")),
+                            })),
+                            paren_token: Paren(Span::call_site()),
+                            args: Punctuated::new(),
+                        });
+                    }
+                }
+            }
+
+            Type::TraitObject(obj) => {
+                let bound = match &obj.bounds[0] {
+                    TypeParamBound::Trait(bound) => bound,
+                    other => panic!("{:?}", other),
+                };
+
+                let name = match bound.path.segments.last() {
+                    Some(segment) => &segment.ident,
+                    None => panic!(),
+                };
+
+                let vtable_name = Ident::new(&format!("I{}", name), Span::call_site());
+                let class_name = Ident::new(&format!("C{}", name), Span::call_site());
+                let ty = ty.clone();
+
+                // TODO: Move the static vtable somewhere it can be shared
+                // between all invocations so they do not bloat the binary
+                return Expr::Verbatim(quote! {{
+                    static VTABLE: #vtable_name = #name::vtable::<#ty, _>();
+
+                    let instance = Box::new(#class_name {
+                        vtable: &VTABLE as *const #vtable_name,
+                        instance: #input
+                    });
+
+                    let ptr = Box::into_raw(instance);
+                    log::trace!(concat!("into_raw ", stringify!(#class_name), " {:?}"), ptr);
+                    ptr as *mut std::ffi::c_void
+                }});
+            }
+
+            _ => {}
+        },
+
+        Type::Path(pat) => {
+            if let Some(seg) = pat.path.segments.last() {
+                match &seg.ident.to_string() as &str {
+                    "Box" => {
+                        let args = match &seg.arguments {
+                            PathArguments::AngleBracketed(args) => args,
+                            other => panic!("{:?}", other),
+                        };
+
+                        if let GenericArgument::Type(Type::TraitObject(obj)) = &args.args[0] {
+                            let bound = match &obj.bounds[0] {
+                                TypeParamBound::Trait(bound) => bound,
+                                other => panic!("{:?}", other),
+                            };
+
+                            let name = match bound.path.segments.last() {
+                                Some(segment) => &segment.ident,
+                                None => panic!(),
+                            };
+
+                            let vtable_name = Ident::new(&format!("I{}", name), Span::call_site());
+                            let class_name = Ident::new(&format!("C{}", name), Span::call_site());
+                            let ty = ty.clone();
+
+                            return Expr::Verbatim(quote! {{
+                                static VTABLE: #vtable_name = #name::vtable::<#ty, _>();
+                                let instance = Box::new(#class_name {
+                                    vtable: &VTABLE as *const #vtable_name,
+                                    instance: #input
+                                });
+
+                                let ptr = Box::into_raw(instance);
+                                log::trace!(concat!("into_raw ", stringify!(#class_name), " {:?}"), ptr);
+                                ptr as *mut std::ffi::c_void
+                            }});
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    input
+}
