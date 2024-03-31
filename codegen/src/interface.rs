@@ -831,3 +831,199 @@ fn vtable_impl(input: &ItemTrait) -> ItemImpl {
         })],
     }
 }
+
+pub fn interface(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as ItemTrait);
+
+    let name = input.ident.clone();
+    let vtable_name = Ident::new(&format!("I{}", name), Span::call_site());
+    let class_name = Ident::new(&format!("C{}", name), Span::call_site());
+
+    let vtable_fields: Punctuated<_, Token![,]> = input
+        .items
+        .iter()
+        .map(|item| match item {
+            TraitItem::Method(method) => Field {
+                attrs: Vec::new(),
+                vis: Visibility::Public(VisPublic {
+                    pub_token: Token![pub](Span::call_site()),
+                }),
+                ident: Some(method.sig.ident.clone()),
+                colon_token: None,
+                ty: Type::BareFn(TypeBareFn {
+                    lifetimes: None,
+                    unsafety: None,
+                    abi: Some(Abi {
+                        extern_token: Token![extern](Span::call_site()),
+                        name: Some(LitStr::new("thiscall", Span::call_site())),
+                    }),
+                    fn_token: method.sig.fn_token.clone(),
+                    paren_token: method.sig.paren_token.clone(),
+                    inputs: method
+                        .sig
+                        .inputs
+                        .iter()
+                        .map(|input| match input {
+                            FnArg::Receiver(receiver) => BareFnArg {
+                                attrs: Vec::new(),
+                                name: None,
+                                ty: Type::Ptr(pointer_type(
+                                    receiver.mutability.clone(),
+                                    Type::Path(path_type(vec![
+                                        segment(ident("std"), None),
+                                        segment(ident("ffi"), None),
+                                        segment(ident("c_void"), None),
+                                    ])),
+                                )),
+                            },
+                            FnArg::Typed(input) => BareFnArg {
+                                attrs: Vec::new(),
+                                name: None,
+                                ty: map_type(&*input.ty),
+                            },
+                        })
+                        .collect(),
+                    variadic: None,
+                    output: match &method.sig.output {
+                        ReturnType::Default => ReturnType::Default,
+                        ReturnType::Type(token, ty) => {
+                            ReturnType::Type(token.clone(), Box::new(map_type(ty)))
+                        }
+                    },
+                }),
+            },
+            item => panic!("{:?}", item),
+        })
+        .collect();
+
+    let foreign_impl = impl_trait(
+      name.clone(),
+      path_type(vec![
+          segment(ident("crate"), None),
+          segment(ident("foreign"), None),
+          segment(
+              ident("Foreign"),
+              Some(generics_argument(vec![GenericArgument::Type(
+                  Type::TraitObject(TypeTraitObject {
+                      dyn_token: Some(Token![dyn](name.span())),
+                      bounds: punctuated(vec![TypeParamBound::Trait(TraitBound {
+                          paren_token: None,
+                          modifier: TraitBoundModifier::None,
+                          lifetimes: None,
+                          path: path(vec![segment(name.clone(), None)]),
+                      })]),
+                  }),
+              )])),
+          ),
+      ]),
+      &[],
+      input
+          .items
+          .iter()
+          .map(|item| match item {
+              TraitItem::Method(method) => ImplItem::Method(ImplItemMethod {
+                  attrs: Vec::new(),
+                  vis: Visibility::Inherited,
+                  defaultness: None,
+                  sig: method.sig.clone(),
+                  block: Block {
+                      brace_token: Brace(method.sig.ident.span()),
+                      stmts: vec![
+                          Stmt::Expr(Expr::Verbatim({
+                          let trait_name = name.clone();
+                          let name = method.sig.ident.clone();
+                          quote! {
+                              log::trace!(concat!("Foreign::<", stringify!(#trait_name), ">::", stringify!(#name), " {:?}"), self.0);
+                          }
+                      })),
+                      Stmt::Expr(Expr::Unsafe(ExprUnsafe {
+                          attrs: Vec::new(),
+                          unsafe_token: Token![unsafe](method.sig.ident.span()),
+                          block: Block {
+                              brace_token: Brace(method.sig.ident.span()),
+                              stmts: vec![Stmt::Expr({
+                                  let output = Expr::Call(ExprCall {
+                                      attrs: Vec::new(),
+                                      func: {
+                                          let class_name = class_name.clone();
+                                          let method = method.sig.ident.clone();
+                                          Box::new(Expr::Verbatim(quote! {
+                                              ((*(*(self.0 as *const #class_name<()>)).vtable).#method)
+                                          }))
+                                      },
+                                      paren_token: Paren(method.sig.ident.span()),
+                                      args: method
+                                          .sig
+                                          .inputs
+                                          .iter()
+                                          .map(|input| match input {
+                                              FnArg::Receiver(input) => Expr::Cast(ExprCast {
+                                                  attrs: Vec::new(),
+                                                  expr: Box::new(Expr::Verbatim(quote! {
+                                                      self.0
+                                                  })),
+                                                  as_token: Token![as](input.self_token.span),
+                                                  ty: Box::new(Type::Ptr(pointer_type(
+                                                      input.mutability.clone(),
+                                                      Type::Path(path_type(vec![
+                                                          segment(ident("std"), None),
+                                                          segment(ident("ffi"), None),
+                                                          segment(ident("c_void"), None),
+                                                      ])),
+                                                  ))),
+                                              }),
+                                              FnArg::Typed(input) => match &*input.pat {
+                                                  Pat::Ident(id) => map_input(
+                                                      Expr::Path(ExprPath {
+                                                          attrs: Vec::new(),
+                                                          qself: None,
+                                                          path: path(vec![segment(
+                                                              id.ident.clone(),
+                                                              None,
+                                                          )]),
+                                                      }),
+                                                      &input.ty,
+                                                  ),
+                                                  pat => panic!("{:?}", pat),
+                                              },
+                                          })
+                                          .collect(),
+                                  });
+
+                                  match &method.sig.output {
+                                      ReturnType::Default => output,
+                                      ReturnType::Type(_, ty) => map_output(output, ty),
+                                  }
+                              })],
+                          },
+                      }))],
+                  },
+              }),
+              item => panic!("{:?}", item),
+          })
+          .collect(),
+  );
+
+    let vtable_impl = vtable_impl(&input);
+
+    let tokens = quote! {
+        #input
+
+        #vtable_impl
+
+        #[repr(C)]
+        pub(crate) struct #vtable_name {
+            #vtable_fields
+        }
+
+        #[repr(C)]
+        pub(crate) struct #class_name<T> {
+            pub(crate) vtable: *const #vtable_name,
+            pub(crate) instance: T,
+        }
+
+        #foreign_impl
+    };
+
+    tokens.into()
+}
