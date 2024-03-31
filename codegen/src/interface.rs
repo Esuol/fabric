@@ -253,3 +253,75 @@ fn map_input(input: Expr, ty: &Type) -> Expr {
 
     input
 }
+
+fn map_output(input: Expr, ty: &Type) -> Expr {
+    match ty {
+        Type::Reference(reference) => match &*reference.elem {
+            Type::Path(pat) => {
+                if let Some(seg) = pat.path.segments.last() {
+                    match &seg.ident.to_string() as &str {
+                        "CStr" => {
+                            return Expr::Call(ExprCall {
+                                attrs: Vec::new(),
+                                func: Box::new(Expr::Path(ExprPath {
+                                    attrs: Vec::new(),
+                                    qself: None,
+                                    path: path(vec![
+                                        segment(ident("std"), None),
+                                        segment(ident("ffi"), None),
+                                        segment(ident("CStr"), None),
+                                        segment(ident("from_ptr"), None),
+                                    ]),
+                                })),
+                                paren_token: Paren(Span::call_site()),
+                                args: punctuated(vec![input]),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            Type::TraitObject(obj) => {
+                return Expr::Verbatim(quote! {
+                    &mut crate::foreign::Foreign::<#obj>::with(#input)
+                })
+            }
+
+            _ => {}
+        },
+
+        Type::Path(pat) => {
+            if let Some(seg) = pat.path.segments.last() {
+                match &seg.ident.to_string() as &str {
+                    "Box" => {
+                        let args = match &seg.arguments {
+                            PathArguments::AngleBracketed(args) => args,
+                            other => panic!("{:?}", other),
+                        };
+
+                        let arg = match &args.args[0] {
+                            GenericArgument::Type(arg) => arg,
+                            other => panic!("{:?}", other),
+                        };
+
+                        match arg {
+                            Type::TraitObject(obj) => {
+                                return Expr::Verbatim(quote! {
+                                    Box::new(crate::foreign::Foreign::<#obj>::with(#input))
+                                });
+                            }
+
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    input
+}
